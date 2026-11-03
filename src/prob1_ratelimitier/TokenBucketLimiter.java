@@ -20,11 +20,12 @@ public class TokenBucketLimiter implements RateLimiter {
 
     @Override
     public boolean allowN(String clientId, int tokens) {
-        if (!this.clientTokenMap.containsKey(clientId)) {
-            this.clientTokenMap.put(clientId, new ClientBucket(this.capacity, this.refillRatePerSec));
+        if (tokens <= 0 || tokens > this.capacity) {
+            return false;
         }
 
-        return this.clientTokenMap.get(clientId).allow(tokens);
+        return this.clientTokenMap.computeIfAbsent(clientId, k -> new ClientBucket(this.capacity, this.refillRatePerSec)).
+                allow(tokens);
     }
 }
 

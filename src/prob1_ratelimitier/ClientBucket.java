@@ -4,35 +4,32 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 
 public class ClientBucket {
-    private int remainTokens;
+    private double tokens;
     private final int capacity;
     private final double refillRatePerSec;
-    private LocalDateTime lastUpdatedAt;
+    private long lastRefillNanos;
 
     ClientBucket(int capacity, double refillRatePerSec) {
         this.capacity = capacity;
-        this.remainTokens = capacity;
+        this.tokens = capacity;
         this.refillRatePerSec = refillRatePerSec;
-        this.lastUpdatedAt = LocalDateTime.now();
+        this.lastRefillNanos = System.nanoTime();
     }
 
-    public boolean allow(int tokens) {
-        synchronized (this) {
-            LocalDateTime now = LocalDateTime.now();
+    public synchronized boolean allow(int requestedTokens) {
+        long nowNanos = System.nanoTime();
+        double elapsedSeconds = (nowNanos - this.lastRefillNanos) / 1_000_000_000.0;
 
-            long durationMillis = Duration.between(this.lastUpdatedAt, now).toMillis();
-            double refillCounts = ((double)durationMillis/1000.0) * this.refillRatePerSec;
-            if (refillCounts >= 1.0) {
-                this.remainTokens = (int) (this.remainTokens + refillCounts);
-                this.lastUpdatedAt = now;
-            }
+        // 1. 경과 시간에 따른 토큰 충전 (Capacity 상한 적용)
+        this.tokens = Math.min(this.capacity, this.tokens + (elapsedSeconds * this.refillRatePerSec));
+        this.lastRefillNanos = nowNanos;
 
-            if (this.capacity < tokens || remainTokens == 0) {
-                return false;
-            }
-            this.remainTokens -= tokens;
-
-            return true;
+        // 2. 토큰 보유량 검증 및 차감
+        if (this.tokens < requestedTokens) {
+            return false;
         }
+
+        this.tokens -= requestedTokens;
+        return true;
     }
 }
