@@ -7,4 +7,5 @@ public interface ConcurrentLRUCache<K, V> {
     void put(K key, V value);
     int size();
     int capacity();
+    void print();
 }
