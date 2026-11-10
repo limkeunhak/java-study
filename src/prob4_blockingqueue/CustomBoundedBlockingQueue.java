@@ -3,14 +3,16 @@ package prob4_blockingqueue;
 import java.time.Duration;
 import java.util.LinkedList;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-public class CustomBoundedBlockingQueue<T, 것, 내일은, 것도, 동안> implements BoundedBlockingQueue<T> {
+public class CustomBoundedBlockingQueue<T> implements BoundedBlockingQueue<T> {
     private final int capacity;
     private LinkedList<T> buffer;
-    private ReentrantLock fullLock;
-    private ReentrantLock emptyLock;
-    private Condition condition;
+    private ReentrantLock lock;
+    private Condition notEmpty;
+    private Condition notFull;
 
     public CustomBoundedBlockingQueue(int capacity) {
         if (capacity <= 0) {
@@ -18,61 +20,106 @@ public class CustomBoundedBlockingQueue<T, 것, 내일은, 것도, 동안> imple
         }
         this.capacity = capacity;
         this.buffer = new LinkedList<>();
-        this.fullLock = new ReentrantLock();
-        this.emptyLock = new ReentrantLock();
-        this.condition = Condition.Empty;
+        this.lock = new ReentrantLock();
+        this.notEmpty = lock.newCondition();
+        this.notFull = lock.newCondition();
     }
 
     @Override
-    public synchronized void put(T item) throws InterruptedException {
-        // 1. 빈자리가 없다면 자리가 날 때까지 대기
-        while (this.isFull()) {
-            fullLock.wait();
+    public void put(T item) throws InterruptedException {
+        if (item == null) {
+            throw new NullPointerException("Item cannot be null");
         }
 
-        // 2. 빈자리가 있다면 넣기
-        this.buffer.add(item);
-        fullLock.notifyAll();
+        this.lock.lock();
+        try {
+            // 1. 빈자리가 없다면 자리가 날 때까지 대기
+            while (this.isFull()) {
+                this.notFull.await();
+            }
+
+            // 2. 빈자리가 생기면 넣고 소비자에게 신호
+            this.buffer.add(item);
+            this.notEmpty.signal();
+        } finally {
+            this.lock.unlock(); // 예외/인터럽트 발생 시에도 100% 해제 보장
+        }
     }
 
     @Override
-    public synchronized T take() throws InterruptedException {
-        // TODO: 구현
-        // 1. 큐에 데이터가 있다면 즉시 꺼내어 반환
-        // 2. 큐에 데이터가 없다면 데이터가 들어올때까지 대기
-        // 3. 큐에 데이터가 들어오면 꺼내어 반환 (들어오지 않는다면 무한 대기)
-        while(this.isEmpty()) {
-            emptyLock.wait();
-        }
+    public T take() throws InterruptedException {
+        this.lock.lock();
+        try {
+            // 1. 데이터가 없다면 들어올 때까지 대기
+            while (this.isEmpty()) {
+                this.notEmpty.await();
+            }
 
-        T value = this.buffer.pop();
-        emptyLock.notifyAll();
-        return value;
+            // 2. 데이터가 생기면 꺼내고 생산자에게 신호
+            T value = this.buffer.removeFirst(); // FIFO 보장
+            this.notFull.signal();
+            return value;
+        } finally {
+            this.lock.unlock(); // 100% 해제 보장
+        }
     }
 
     @Override
     public boolean offer(T item, Duration timeout) throws InterruptedException {
-        // TODO: 구현
-        // 1. 빈자리가 있다면 즉시 넣고 true 반환
-        // 2. 큐가 가득찼다면 빈자리가 생길때까지 timeout 시간동안 대기
-        // 3. 대기 시간 내에 자리가 나면 아이템을 넣고 true 반환
-        // 4. 대기 시간 내에 자리가 안나면 넣지 않고 false 반환
-        return false;
+        if (item == null) {
+            throw new NullPointerException("Item cannot be null");
+        }
+
+        long nanosTimeout = timeout.toNanos(); // 1. 전체 나노초 변환
+        this.lock.lock();
+        try {
+            // 2. while 루프로 가짜 깨어남 방어 및 남은 시간 차감
+            while (this.isFull()) {
+                if (nanosTimeout <= 0L) {
+                    return false; // 시간 초과 시 포기
+                }
+                nanosTimeout = this.notFull.awaitNanos(nanosTimeout);
+            }
+
+            // 3. 자리가 확보되었으므로 데이터 추가
+            this.buffer.add(item);
+            this.notEmpty.signal();
+            return true; // 성공 시 true 반환
+        } finally {
+            this.lock.unlock();
+        }
     }
 
     @Override
     public Optional<T> poll(Duration timeout) throws InterruptedException {
-        // TODO: 구현
-        // 1. 큐에 데이터가 있다면 꺼내서 Optional.of(item) 반환
-        // 2. 큐가 비어있다면 데이터가 들어올 때까지 최대 timeout 시간동안 대기
-        // 3. 대기 시간 내에 새 데이터가 들어오면 꺼내어 Optional.of(item) 반환
-        // 4. 시간이 끝날 때까지 데이터가 들어오지 않으면 Optional.empty() 반환
-        return Optional.empty();
+        long nanosTimeout = timeout.toNanos(); // 1. 전체 나노초 변환
+        this.lock.lock();
+        try {
+            // 2. while 루프로 가짜 깨어남 방어 및 남은 시간 차감
+            while (this.isEmpty()) {
+                if (nanosTimeout <= 0L) {
+                    return Optional.empty(); // 시간 초과 시 빈 값 반환
+                }
+                nanosTimeout = this.notEmpty.awaitNanos(nanosTimeout);
+            }
+
+            // 3. 데이터가 확보되었으므로 꺼내기
+            T value = this.buffer.removeFirst();
+            this.notFull.signal();
+            return Optional.of(value);
+        } finally {
+            this.lock.unlock();
+        }
     }
 
     @Override
-    public synchronized int size() {
-        return this.buffer.size();
+    public int size() {
+        this.lock.lock();
+        try {
+            return this.buffer.size();
+        } finally {
+            this.lock.unlock();
+        }
     }
 
     @Override
@@ -80,18 +127,12 @@ public class CustomBoundedBlockingQueue<T, 것, 내일은, 것도, 동안> imple
         return this.capacity;
     }
 
-    private synchronized boolean isFull() {
+    // 이미 외부(put, take, offer, poll)에서 lock을 쥔 상태에서만 호출되므로 동기화 불필요
+    private boolean isFull() {
         return this.buffer.size() == this.capacity;
     }
 
-    private synchronized boolean isEmpty() {
+    private boolean isEmpty() {
         return this.buffer.isEmpty();
     }
-}
-
-enum Condition {
-    Empty,
-    NotEmpty,
-    Full,
-    NotFull,
 }
